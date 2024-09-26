@@ -29,12 +29,13 @@ sp = spotipy.Spotify(
 
 # List all playlists owned by the current user
 playlists = sp.current_user_playlists()
-playlist_id = 0
+playlist_id = 3
+include_followed_artists = False
 
 # ask user to select a playlist
-for i, playlist in enumerate(playlists["items"]):
-    print(f"{playlist['name']} ({i})")
-playlist_id = input("Enter the playlist id: ")
+# for i, playlist in enumerate(playlists["items"]):
+#     print(f"{playlist['name']} ({i})")
+# playlist_id = input("Enter the playlist id: ")
 
 
 print(f"Selected playlist: {playlists['items'][int(playlist_id)]['name']}")
@@ -52,5 +53,92 @@ for track in tracks:
         artists.append(artist)
 
 print(f"Number of artists in the playlist: {len(artists)}")
+# for artist in artists:
+#     print(artist["name"])
+
+
+def is_unwanted_song_or_album(name):
+    # remove if name contains "Edition", "Live", "Anniversary", "Remaster", "Remastered"
+    return (
+        "Edition" in name
+        or "Live" in name
+        or "Anniversary" in name
+        or "Remaster" in name
+        or "Remastered" in name
+        or "Instrumental" in name
+        or "Acoustic" in name
+        or "Instrumentals" in name
+        or "Capella" in name
+        or "Cappella" in name
+        or "Acapella" in name
+        or "Remix" in name
+    )
+
+
+def remove_unwanted_songs(songs):
+    res = [song for song in songs if not is_unwanted_song_or_album(song["name"])]
+    return res
+
+
+def get_songs_from_album_without_unwanted(album):
+    # first check if the album name is unwanted
+    if is_unwanted_song_or_album(album["name"]):
+        return []
+    songs_in_album = []
+    results = sp.album_tracks(album["id"])
+    songs_in_album.extend(results["items"])
+    while results["next"]:
+        results = sp.next(results)
+        songs_in_album.extend(results["items"])
+    songs_in_album = remove_unwanted_songs(songs_in_album)
+    return songs_in_album
+
+
+def remove_duplicate_songs(songs):
+    # check with title/duration
+    res = []
+    for song in songs:
+        if song not in res and song["name"] not in [s["name"] for s in res]:
+            res.append(song)
+    return res
+
+
+def get_artist_songs(artist, include_groups="album,single"):
+    # for some reason separate album and single requests return more songs
+    artist_songs = []
+    albums = []
+    results = sp.artist_albums(artist["id"], include_groups=include_groups)
+    albums.extend(results["items"])
+    while results["next"]:
+        results = sp.next(results)
+        albums.extend(results["items"])
+    print(f"Number of albums found for {artist['name']}: {len(albums)}")
+    for album in albums:
+        songs = get_songs_from_album_without_unwanted(album)
+        print(f"Number of songs found for {album['name']}: {len(songs)}")
+        artist_songs.extend(songs)
+
+    return artist_songs
+
+
+# Now get all songs by the artists, and add them to a new playlist
+# Get all songs by the artists
 for artist in artists:
-    print(artist["name"])
+    artist_songs = get_artist_songs(artist, include_groups="album")
+    artist_songs.extend(get_artist_songs(artist, include_groups="single"))
+    artist_songs = remove_duplicate_songs(artist_songs)
+
+    for song in artist_songs:
+        print("!!" + song["name"] + "!!")
+
+print(f"Number of songs found for {artist['name']}: {len(artist_songs)}")
+
+# print(f"Number of songs found: {len(songs)}")
+
+# Create a new playlist
+# playlist_name = input("Enter the name of the new playlist: ")
+# playlist = sp.user_playlist_create(sp.me()["id"], playlist_name)
+
+# Add the songs to the new playlist
+# sp.playlist_add_items(playlist["id"], songs)
+# print(f"Playlist {playlist_name} created with {len(songs)} songs")
