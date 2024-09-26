@@ -9,14 +9,15 @@ load_dotenv()
 def get_playlist_tracks(playlist_id):
     results = sp.playlist_tracks(playlist_id)
     tracks = results["items"]
-    # while results["next"]:
-    #     results = sp.next(results)
-    #     tracks.extend(results["items"])
+    while results["next"]:
+        results = sp.next(results)
+        tracks.extend(results["items"])
     return tracks
 
 
 # Scope for playlist read, followed artists read, creating playlist, and adding tracks to playlist
 scope = "playlist-read-private user-follow-read playlist-modify-private"
+
 
 sp = spotipy.Spotify(
     auth_manager=SpotifyOAuth(
@@ -24,7 +25,7 @@ sp = spotipy.Spotify(
         client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
         redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
         scope=scope,
-    )
+    ),
 )
 
 # List all playlists owned by the current user
@@ -103,17 +104,23 @@ def remove_duplicate_songs(songs):
     return res
 
 
-def get_artist_songs(artist, include_groups="album,single"):
+def get_artist_songs(artist, include_groups="album,single", progress_callback=None):
     # for some reason separate album and single requests return more songs
     artist_songs = []
     albums = []
     results = sp.artist_albums(artist["id"], include_groups=include_groups)
+
     albums.extend(results["items"])
     while results["next"]:
         results = sp.next(results)
+        if len(results["items"]) == 0:
+            break
         albums.extend(results["items"])
-    # print(f"Number of albums found for {artist['name']}: {len(albums)}")
-    for album in albums:
+
+    total_albums = len(albums)
+    for i, album in enumerate(albums):
+        if progress_callback:
+            progress_callback(i, total_albums)
         songs = get_songs_from_album_without_unwanted(album)
         # print(f"Number of songs found for {album['name']}: {len(songs)}")
         artist_songs.extend(songs)
@@ -121,18 +128,69 @@ def get_artist_songs(artist, include_groups="album,single"):
     return artist_songs
 
 
+current_progression_percentage = 0
+total_artists = len(artists)
+current_artist = 0
+
+
+def show_progression():
+    global current_progression_percentage
+    print(f"Progression: {round(current_progression_percentage, 2)}%")
+
+
+def progress_callback_single(i, total):
+    global current_progression_percentage
+
+    percentage = (i + 1) / total
+    percentage /= 2
+    percentage += 0.5
+    # 50-100%
+
+    # curent progression is current_artist/total_artists + the current percentage in the current artist
+    progression_per_artist = 1 / total_artists
+    progression_in_current_artist = percentage
+    current_progression = (
+        current_artist - 1
+    ) / total_artists + progression_per_artist * progression_in_current_artist
+    current_progression_percentage = current_progression * 100
+    show_progression()
+
+
+def progress_callback_album(i, total):
+    global current_progression_percentage
+
+    percentage = (i + 1) / total
+    percentage /= 2
+    # 0-50%
+    progression_per_artist = 1 / total_artists
+    progression_in_current_artist = percentage
+    current_progression = (
+        current_artist - 1
+    ) / total_artists + progression_per_artist * progression_in_current_artist
+    current_progression_percentage = current_progression * 100
+    show_progression()
+
+
 # Now get all songs by the artists, and add them to a new playlist
 # Get all songs by the artists
 total_songs = []
 for artist in artists:
-    artist_songs = get_artist_songs(artist, include_groups="album")
-    artist_songs.extend(get_artist_songs(artist, include_groups="single"))
+    current_artist += 1
+    artist_songs = get_artist_songs(
+        artist, include_groups="album", progress_callback=progress_callback_album
+    )
+    artist_songs.extend(
+        get_artist_songs(
+            artist, include_groups="single", progress_callback=progress_callback_single
+        )
+    )
     artist_songs = remove_duplicate_songs(artist_songs)
     total_songs.extend(artist_songs)
 
-    print(f"Number of songs found for {artist['name']}: {len(artist_songs)}")
+    show_progression()
+    print(f"Total number of songs found for {artist['name']}: {len(artist_songs)}")
 
-print(f"Number of songs found: {len(total_songs)}")
+print(f"Final number of songs found: {len(total_songs)}")
 
 
 # Create a new playlist
