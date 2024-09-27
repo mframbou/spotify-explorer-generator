@@ -34,9 +34,9 @@ playlist_id = 3
 include_followed_artists = False
 
 # ask user to select a playlist
-# for i, playlist in enumerate(playlists["items"]):
-#     print(f"{playlist['name']} ({i})")
-# playlist_id = input("Enter the playlist id: ")
+for i, playlist in enumerate(playlists["items"]):
+    print(f"{playlist['name']} ({i})")
+playlist_id = input("Enter the playlist id: ")
 
 
 print(f"Selected playlist: {playlists['items'][int(playlist_id)]['name']}")
@@ -52,6 +52,12 @@ artists = []
 for track in tracks:
     for artist in track["track"]["artists"]:
         artists.append(artist)
+
+# Remove duplicate artists and sort by name
+artists = sorted(
+    list({artist["name"]: artist for artist in artists}.values()),
+    key=lambda x: x["name"],
+)
 
 print(f"Number of artists in the playlist: {len(artists)}")
 # for artist in artists:
@@ -171,6 +177,11 @@ def progress_callback_album(i, total):
     show_progression()
 
 
+# Create a new playlist
+playlist_name = input("Enter the name of the new playlist: ")
+# playlist_name = "pouetpouetpouet2"
+playlist = sp.user_playlist_create(sp.me()["id"], playlist_name, public=False)
+
 # Now get all songs by the artists, and add them to a new playlist
 # Get all songs by the artists
 total_songs = []
@@ -185,23 +196,15 @@ for artist in artists:
         )
     )
     artist_songs = remove_duplicate_songs(artist_songs)
+
+    artist_songs_uris = [song["uri"] for song in artist_songs]
+    for i in range(0, len(artist_songs_uris), 100):
+        sp.playlist_add_items(playlist["id"], artist_songs_uris[i : i + 100])
+
     total_songs.extend(artist_songs)
 
     show_progression()
-    print(f"Total number of songs found for {artist['name']}: {len(artist_songs)}")
+    # print(f"Total number of songs found for {artist['name']}: {len(artist_songs)}")
 
-print(f"Final number of songs found: {len(total_songs)}")
-
-
-# Create a new playlist
-playlist_name = input("Enter the name of the new playlist: ")
-# playlist_name = "pouetpouetpouet2"
-playlist = sp.user_playlist_create(sp.me()["id"], playlist_name, public=False)
-
-# Convert total_songs to list of URIs
-total_songs = [song["uri"] for song in total_songs]
-# Add the songs to the new playlist
-# requests are capped to 100 songs per request
-for i in range(0, len(total_songs), 100):
-    sp.playlist_add_items(playlist["id"], total_songs[i : i + 100])
+# print(f"Final number of songs found: {len(total_songs)}")
 print(f"Playlist {playlist_name} created with {len(total_songs)} songs")
