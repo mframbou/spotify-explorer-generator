@@ -32,6 +32,7 @@ sp = spotipy.Spotify(
 playlists = sp.current_user_playlists()
 playlist_id = 3
 include_followed_artists = False
+wanted_songs_per_artist = 15
 
 # ask user to select a playlist
 for i, playlist in enumerate(playlists["items"]):
@@ -46,12 +47,28 @@ tracks = get_playlist_tracks(playlists["items"][int(playlist_id)]["id"])
 
 # print number of tracks in the playlist
 print(f"Number of tracks in the playlist: {len(tracks)}")
+wanted_songs_per_artist = int(
+    input(
+        "Enter the number of songs you want to keep per artist (sorted by popularity): "
+    )
+)
 
 # Get all artists in the selected playlist
 artists = []
 for track in tracks:
     for artist in track["track"]["artists"]:
         artists.append(artist)
+
+if include_followed_artists:
+    # Get all followed artists
+    followed_artists = []
+    results = sp.current_user_followed_artists()
+    followed_artists.extend(results["artists"]["items"])
+    while results["artists"]["next"]:
+        results = sp.next(results["artists"])
+        followed_artists.extend(results["artists"]["items"])
+
+    artists.extend(followed_artists)
 
 # Remove duplicate artists and sort by name
 artists = sorted(
@@ -177,6 +194,24 @@ def progress_callback_album(i, total):
     show_progression()
 
 
+def sort_songs_by_popularity(songs):
+    songs_ids = [song["id"] for song in songs]
+    # tracks is limited to 50 per request, so we need to split the list
+    songs_popularity = []
+    for i in range(0, len(songs_ids), 50):
+        songs_popularity.extend(sp.tracks(songs_ids[i : i + 50])["tracks"])
+
+    # sort songs by popularity
+    sorted_songs = sorted(songs_popularity, key=lambda x: x["popularity"], reverse=True)
+
+    return sorted_songs
+
+
+def get_artist_top_10_songs(artist):
+    top_tracks = sp.artist_top_tracks(artist["id"])["tracks"]
+    return top_tracks
+
+
 # Create a new playlist
 playlist_name = input("Enter the name of the new playlist: ")
 # playlist_name = "pouetpouetpouet2"
@@ -196,12 +231,33 @@ for artist in artists:
         )
     )
     artist_songs = remove_duplicate_songs(artist_songs)
+    # print("artist songs before sort:")
+    # for song in artist_songs:
+    # print(song["name"])
+    top_10_songs = get_artist_top_10_songs(artist)
+    artist_songs = sort_songs_by_popularity(artist_songs)
+    final_artist_songs = []
+    for song in top_10_songs:
+        final_artist_songs.append(song)
+    if wanted_songs_per_artist > 10:
+        for song in artist_songs:
+            final_artist_songs.append(song)
+    final_artist_songs = remove_duplicate_songs(final_artist_songs)
+    final_artist_songs = final_artist_songs[:wanted_songs_per_artist]
+    # print(f"Final songs for {artist['name']}:")
+    # for song in final_songs:
+    # print(f"{song['name']} - {song['popularity']}")
 
-    artist_songs_uris = [song["uri"] for song in artist_songs]
+    # print("--------------------")
+    # print("artist songs after sort:")
+    # for song in artist_songs:
+    #     print(song["name"])
+
+    artist_songs_uris = [song["uri"] for song in final_artist_songs]
     for i in range(0, len(artist_songs_uris), 100):
         sp.playlist_add_items(playlist["id"], artist_songs_uris[i : i + 100])
 
-    total_songs.extend(artist_songs)
+    total_songs.extend(final_artist_songs)
 
     show_progression()
     # print(f"Total number of songs found for {artist['name']}: {len(artist_songs)}")
