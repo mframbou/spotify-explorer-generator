@@ -315,9 +315,9 @@ def main():
                 retry_after = 120
 
             print(
-                f"Rate limit reached while fetching artists, waiting {retry_after + 10} seconds"
+                f"Rate limit reached while fetching artists, waiting {retry_after + 30} seconds"
             )
-            time.sleep(retry_after + 10)
+            time.sleep(retry_after + 30)
         else:
             print(f"A Spotify error occurred: {e}")
 
@@ -361,9 +361,9 @@ def main():
                     retry_after = 120
 
                 print(
-                    f"Rate limit reached while fetching songs for {artist['name']}, waiting {retry_after + 10} seconds"
+                    f"Rate limit reached while fetching songs for {artist['name']}, waiting {retry_after + 30} seconds"
                 )
-                time.sleep(retry_after + 10)
+                time.sleep(retry_after + 30)
             else:
                 print(f"A Spotify error occurred: {e}")
 
@@ -384,9 +384,9 @@ def main():
                         retry_after = 120
 
                     print(
-                        f"Rate limit reached while adding songs to the playlist, waiting {retry_after + 10} seconds"
+                        f"Rate limit reached while adding songs to the playlist, waiting {retry_after + 30} seconds"
                     )
-                    time.sleep(retry_after + 10)
+                    time.sleep(retry_after + 30)
                 else:
                     print(f"A Spotify error occurred: {e}")
 
@@ -411,9 +411,9 @@ def main():
                     retry_after = 120
 
                 print(
-                    f"Rate limit reached while adding songs to the playlist, waiting {retry_after + 10} seconds"
+                    f"Rate limit reached while adding songs to the playlist, waiting {retry_after + 30} seconds"
                 )
-                time.sleep(retry_after + 10)
+                time.sleep(retry_after + 30)
             else:
                 print(f"A Spotify error occurred: {e}")
 

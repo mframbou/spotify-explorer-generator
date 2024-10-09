@@ -1,0 +1,1 @@
+we need to wait at least 30 seconds if we reach the rate limit because spotify api is based on a 30 seconds rolling window
