@@ -311,13 +311,13 @@ def main():
             try:
                 retry_after = int(e.headers["Retry-After"])
             except (KeyError, ValueError):
-                print("No Retry-After header found, waiting 60 seconds")
-                retry_after = 60
+                print("No Retry-After header found, waiting 120 seconds")
+                retry_after = 120
 
             print(
-                f"Rate limit reached while fetching artists, waiting {retry_after} seconds"
+                f"Rate limit reached while fetching artists, waiting {retry_after + 10} seconds"
             )
-            time.sleep(retry_after + 1)
+            time.sleep(retry_after + 10)
         else:
             print(f"A Spotify error occurred: {e}")
 
@@ -361,9 +361,9 @@ def main():
                     retry_after = 120
 
                 print(
-                    f"Rate limit reached while fetching songs for {artist['name']}, waiting {retry_after} seconds"
+                    f"Rate limit reached while fetching songs for {artist['name']}, waiting {retry_after + 10} seconds"
                 )
-                time.sleep(retry_after + 1)
+                time.sleep(retry_after + 10)
             else:
                 print(f"A Spotify error occurred: {e}")
 
@@ -380,13 +380,13 @@ def main():
                     try:
                         retry_after = int(e.headers["Retry-After"])
                     except (KeyError, ValueError):
-                        print("No Retry-After header found, waiting 60 seconds")
-                        retry_after = 60
+                        print("No Retry-After header found, waiting 120 seconds")
+                        retry_after = 120
 
                     print(
-                        f"Rate limit reached while adding songs to the playlist, waiting {retry_after} seconds"
+                        f"Rate limit reached while adding songs to the playlist, waiting {retry_after + 10} seconds"
                     )
-                    time.sleep(retry_after + 1)
+                    time.sleep(retry_after + 10)
                 else:
                     print(f"A Spotify error occurred: {e}")
 
@@ -407,13 +407,13 @@ def main():
                 try:
                     retry_after = int(e.headers["Retry-After"])
                 except (KeyError, ValueError):
-                    print("No Retry-After header found, waiting 60 seconds")
-                    retry_after = 60
+                    print("No Retry-After header found, waiting 120 seconds")
+                    retry_after = 120
 
                 print(
-                    f"Rate limit reached while adding songs to the playlist, waiting {retry_after} seconds"
+                    f"Rate limit reached while adding songs to the playlist, waiting {retry_after + 10} seconds"
                 )
-                time.sleep(retry_after + 1)
+                time.sleep(retry_after + 10)
             else:
                 print(f"A Spotify error occurred: {e}")
 
