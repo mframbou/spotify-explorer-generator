@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 import time
 import signal
 import sys
+import datetime
+import threading
 
 # Scope for playlist read, followed artists read, creating playlist, and adding tracks to playlist
 SPOTIFY_API_SCOPE = "playlist-read-private user-follow-read playlist-modify-private"
@@ -13,11 +15,14 @@ MAX_RETRY_COUNT_RATE_LIMIT = 3
 AUTOSAVE_ON_429 = True
 AUTOSAVE_ON_SIGINT = True
 
+stop_event = threading.Event()
+background_thread = None
+
 
 class ProgramState:
     def __init__(self):
-        self.last_artist_saved = None
-        self.last_song_saved = None
+        self.last_artist_saved_id = None
+        self.last_song_saved_id = None
         self.input_playlist_id = None
         self.output_playlist_id = None
         self.wanted_songs_per_artist = None
@@ -25,6 +30,7 @@ class ProgramState:
         self.started_at = None
         self.last_updated_at = None
         self.resumed = False
+        self.filename = None
 
     def save_state(self):
         if (
@@ -37,15 +43,92 @@ class ProgramState:
             return
 
         date_str = self.started_at.strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"{self.input_playlist_id}_{date_str}_state.json"
-        with open(filename, "w") as f:
-            json.dump(self.__dict__, f)
+        if not self.resumed:
+            self.filename = f"{date_str}_{self.input_playlist_id}_state.json"
+        if self.last_updated_at is not None:
+            self.last_updated_at = str(self.last_updated_at)
+        self.started_at = str(self.started_at)
+        with open(self.filename, "w") as f:
+            json.dump(self.__dict__, f, indent=4)
+
+    def load_state_from_file(self, filename):
+        with open(filename, "r") as f:
+            state = json.load(f)
+        self.filename = filename
+        self.resumed = True
+        self.last_artist_saved_id = state["last_artist_saved_id"]
+        self.last_song_saved_id = state["last_song_saved_id"]
+        self.input_playlist_id = state["input_playlist_id"]
+        self.output_playlist_id = state["output_playlist_id"]
+        self.wanted_songs_per_artist = state["wanted_songs_per_artist"]
+        self.artists_ids = state["artists_ids"]
+        self.started_at = datetime.datetime.fromisoformat(state["started_at"])
+        self.last_updated_at = (
+            datetime.datetime.fromisoformat(state["last_updated_at"])
+            if state["last_updated_at"] is not None
+            else None
+        )
+
+
+def find_state_files():
+    state_files = []
+    for file in os.listdir():
+        if file.endswith("_state.json"):
+            state_files.append(file)
+    return state_files
 
 
 program_state = ProgramState()
 
+state_files = find_state_files()
+if len(state_files) > 0:
+    if len(state_files) > 1:
+        print("State files found:")
+        for i, file in enumerate(state_files):
+            print(f"{i} - {file}")
+    else:
+        print(f"State file found: {state_files[0]}")
+
+    while True:
+        try:
+            resume = input("Do you want to resume a previous session? (y/n): ").lower()
+            if resume == "y":
+                resume = True
+                break
+            elif resume == "n":
+                resume = False
+                break
+            else:
+                print("Invalid input, please enter 'y' or 'n'")
+        except ValueError:
+            print("Invalid input, please enter 'y' or 'n'")
+
+    if resume:
+        if len(state_files) > 1:
+            while True:
+                try:
+                    resume_file_id = int(
+                        input("Enter the number of the file to resume: ")
+                    )
+                    if resume_file_id < 0 or resume_file_id >= len(state_files):
+                        print(
+                            f"Invalid file number, please enter a number between 0 and {len(state_files) - 1}"
+                        )
+                    else:
+                        resume_file = state_files[resume_file_id]
+                        break
+                except ValueError:
+                    print(
+                        f"Invalid file number, please enter a number between 0 and {len(state_files) - 1}"
+                    )
+        else:
+            resume_file = state_files[0]
+
+        program_state.load_state_from_file(resume_file)
+
 
 def sigint_handler(sig, frame):
+    program_state.save_state()
     print("Exiting...")
     sys.exit(0)
 
@@ -177,7 +260,10 @@ current_artist = 0
 
 def show_progression():
     global current_progression_percentage
-    print(f"Progression: {round(current_progression_percentage, 2)}%")
+
+    while not stop_event.is_set():
+        print(f"Progression: {round(current_progression_percentage, 2)}%")
+        time.sleep(0.5)
 
 
 def progress_callback_single(i, total):
@@ -197,7 +283,6 @@ def progress_callback_single(i, total):
         current_artist - 1
     ) / total_artists + progression_per_artist * progression_in_current_artist
     current_progression_percentage = current_progression * 100
-    show_progression()
 
 
 def progress_callback_album(i, total):
@@ -214,7 +299,6 @@ def progress_callback_album(i, total):
         current_artist - 1
     ) / total_artists + progression_per_artist * progression_in_current_artist
     current_progression_percentage = current_progression * 100
-    show_progression()
 
 
 def progress_callback_generic():
@@ -290,7 +374,8 @@ def main():
     signal.signal(signal.SIGINT, sigint_handler)
     load_dotenv()
 
-    program_state.started_at = time.localtime()
+    if not program_state.resumed:
+        program_state.started_at = datetime.datetime.now()
 
     sp = spotipy.Spotify(
         auth_manager=SpotifyOAuth(
@@ -301,206 +386,261 @@ def main():
         ),
     )
 
-    # List all playlists owned by the current user
-    playlists = get_user_playlists(sp)
     source_playlist_id = 0
-    include_followed_artists = False
+
     wanted_songs_per_artist = 10
+    artists = []
 
-    if len(playlists["items"]) == 0:
-        print("No playlists found, please create a playlist first")
-        return
+    if (
+        program_state.resumed
+        and program_state.input_playlist_id is not None
+        and program_state.wanted_songs_per_artist is not None
+    ):
+        print("Resuming...")
+        source_playlist_id = program_state.input_playlist_id
+        wanted_songs_per_artist = program_state.wanted_songs_per_artist
+        # can request max 50 artists at once
 
-    for i, playlist in enumerate(playlists["items"]):
-        print(f"{i} - {playlist['name']}")
+        # remove artists before last_artist_saved_id
+        artists_ids = []
+        artists = []
+        found = False
+        if program_state.last_artist_saved_id is None:
+            artists_ids = program_state.artists_ids
+        else:
+            for artist_id in program_state.artists_ids:
+                if artist_id == program_state.last_artist_saved_id and not found:
+                    found = True
+                if found:
+                    artists_ids.append(artist_id)
 
-    while True:
-        try:
-            source_playlist_id = int(input("Enter the desired source playlist id: "))
-            if source_playlist_id < 0 or source_playlist_id >= len(playlists["items"]):
+        for i in range(0, len(artists_ids), 50):
+            request = make_request(sp, sp.artists, artists_ids[i : i + 50])
+            artists.extend(request["artists"])
+
+    else:
+        # List all playlists owned by the current user
+        playlists = get_user_playlists(sp)
+        include_followed_artists = False
+
+        if len(playlists["items"]) == 0:
+            print("No playlists found, please create a playlist first")
+            return
+
+        for i, playlist in enumerate(playlists["items"]):
+            print(f"{i} - {playlist['name']}")
+
+        while True:
+            try:
+                source_playlist_id = int(
+                    input("Enter the desired source playlist id: ")
+                )
+                if source_playlist_id < 0 or source_playlist_id >= len(
+                    playlists["items"]
+                ):
+                    print(
+                        f"Invalid playlist id, please enter a number between 0 and {len(playlists['items']) - 1}"
+                    )
+                else:
+                    break
+            except ValueError:
                 print(
                     f"Invalid playlist id, please enter a number between 0 and {len(playlists['items']) - 1}"
                 )
-            else:
+
+        print(f"Selected playlist: {playlists['items'][source_playlist_id]['name']}")
+        program_state.input_playlist_id = playlists["items"][source_playlist_id]["id"]
+
+        while True:
+            include_followed_artists = input(
+                "Do you want to include followed artists? (y/n): "
+            ).lower()
+            if include_followed_artists == "y":
+                include_followed_artists = True
                 break
-        except ValueError:
-            print(
-                f"Invalid playlist id, please enter a number between 0 and {len(playlists['items']) - 1}"
-            )
+            elif include_followed_artists == "n":
+                include_followed_artists = False
+                break
+            else:
+                print("Invalid input, please enter 'y' or 'n'")
 
-    print(f"Selected playlist: {playlists['items'][source_playlist_id]['name']}")
-    program_state.input_playlist_id = playlists["items"][source_playlist_id]["id"]
+        # Get all tracks in the selected playlist
+        print(
+            f"Getting tracks from playlist {playlists['items'][source_playlist_id]['name']}..."
+        )
+        source_playlist_tracks = get_playlist_tracks(
+            playlists["items"][int(source_playlist_id)]["id"], sp
+        )
 
-    while True:
-        include_followed_artists = input(
-            "Do you want to include followed artists? (y/n): "
-        ).lower()
-        if include_followed_artists == "y":
-            include_followed_artists = True
-            break
-        elif include_followed_artists == "n":
-            include_followed_artists = False
-            break
-        else:
-            print("Invalid input, please enter 'y' or 'n'")
+        # print number of tracks in the playlist
+        # print(f"Number of tracks in the playlist: {len(source_playlist_tracks)}")
 
-    # Get all tracks in the selected playlist
-    print(
-        f"Getting tracks from playlist {playlists['items'][source_playlist_id]['name']}..."
-    )
-    source_playlist_tracks = get_playlist_tracks(
-        playlists["items"][int(source_playlist_id)]["id"], sp
-    )
+        # Get all artists in the selected playlist
 
-    # print number of tracks in the playlist
-    # print(f"Number of tracks in the playlist: {len(source_playlist_tracks)}")
+        for track in source_playlist_tracks:
+            for artist in track["track"]["artists"]:
+                artists.append(artist)
 
-    # Get all artists in the selected playlist
-    artists = []
-    for track in source_playlist_tracks:
-        for artist in track["track"]["artists"]:
-            artists.append(artist)
+        if include_followed_artists:
+            artists.extend(get_user_followed_artists(sp))
 
-    if include_followed_artists:
-        artists.extend(get_user_followed_artists(sp))
+        # Remove duplicate artists and sort by name
+        artists = sorted(
+            list({artist["name"]: artist for artist in artists}.values()),
+            key=lambda x: x["name"],
+        )
 
-    # Remove duplicate artists and sort by name
-    artists = sorted(
-        list({artist["name"]: artist for artist in artists}.values()),
-        key=lambda x: x["name"],
-    )
+        program_state.artists_ids = [artist["id"] for artist in artists]
 
-    program_state.artists_ids = [artist["id"] for artist in artists]
     total_artists = len(artists)  # For progression tracking
     print(f"There are {total_artists} artists to process")
 
-    while True:
-        confirmed = False
+    if not program_state.resumed:
         while True:
-            try:
-                wanted_songs_per_artist = int(
-                    input(
-                        "Enter the maximum number of songs you want to keep per artist (sorted by popularity): "
+            confirmed = False
+            while True:
+                try:
+                    wanted_songs_per_artist = int(
+                        input(
+                            "Enter the maximum number of songs you want to keep per artist (sorted by popularity): "
+                        )
                     )
-                )
-                if wanted_songs_per_artist < 1:
+                    if wanted_songs_per_artist < 1:
+                        print("Please enter a number greater than 0")
+                        continue
+                    else:
+                        break
+                except ValueError:
                     print("Please enter a number greater than 0")
                     continue
-                else:
-                    break
-            except ValueError:
-                print("Please enter a number greater than 0")
+
+            while True:
+                try:
+                    confirm = input(
+                        f"The playlist will contain at most {wanted_songs_per_artist*total_artists} songs. Continue? (y/n): "
+                    ).lower()
+                    if confirm == "y":
+                        confirmed = True
+                        break
+                    else:
+                        confirmed = False
+                        break
+                except ValueError:
+                    print("Invalid input, please enter 'y' or 'n'")
+                    continue
+
+            if confirmed:
+                break
+            else:
                 continue
 
-        while True:
-            try:
-                confirm = input(
-                    f"The playlist will contain at most {wanted_songs_per_artist*total_artists} songs. Continue? (y/n): "
-                ).lower()
-                if confirm == "y":
-                    confirmed = True
-                    break
-                else:
-                    confirmed = False
-                    break
-            except ValueError:
-                print("Invalid input, please enter 'y' or 'n'")
-                continue
+        program_state.wanted_songs_per_artist = wanted_songs_per_artist
 
-        if confirmed:
-            break
-        else:
-            continue
+        # Create a new playlist
+        output_playlist_name = input("Enter the name of the new playlist: ")
 
-    program_state.wanted_songs_per_artist = wanted_songs_per_artist
+        print(
+            f"There are {total_artists} artists to process for a maximum of {wanted_songs_per_artist*total_artists} songs"
+        )
 
-    # Create a new playlist
-    output_playlist_name = input("Enter the name of the new playlist: ")
-
-    print(
-        f"There are {total_artists} artists to process for a maximum of {wanted_songs_per_artist*total_artists} songs"
-    )
-
-    print(f"Creating playlist {output_playlist_name}...")
-    output_playlist = create_playlist(
-        output_playlist_name, spotify_client=sp, public=False
-    )
-    program_state.output_playlist_id = output_playlist["id"]
+        print(f"Creating playlist {output_playlist_name}...")
+        output_playlist = create_playlist(
+            output_playlist_name, spotify_client=sp, public=False
+        )
+        program_state.output_playlist_id = output_playlist["id"]
+    else:
+        # TODO check if still exists
+        output_playlist = make_request(
+            sp, sp.playlist, program_state.output_playlist_id
+        )
 
     # Now get all songs by the artists, and add them to a new playlist
     # Get all songs by the artists
     total_songs = []
     uris_to_add = []
+    resumed_track_loop = False
+    background_thread.start()
+
     for artist in artists:
-        program_state.last_artist_saved = artist
         current_artist += 1
-        try:
 
-            top_10_songs = get_artist_top_10_songs(artist, sp)
-            final_artist_songs = []
-            for song in top_10_songs:
-                final_artist_songs.append(song)
+        top_10_songs = get_artist_top_10_songs(artist, sp)
+        final_artist_songs = []
+        for song in top_10_songs:
+            final_artist_songs.append(song)
 
-            if wanted_songs_per_artist > 10:
-                artist_songs = get_artist_songs(
+        if wanted_songs_per_artist > 10:
+            artist_songs = get_artist_songs(
+                artist,
+                sp,
+                include_groups="album",
+                progress_callback=progress_callback_album,
+            )
+            artist_songs.extend(
+                get_artist_songs(
                     artist,
                     sp,
-                    include_groups="album",
-                    progress_callback=progress_callback_album,
+                    include_groups="single",
+                    progress_callback=progress_callback_single,
                 )
-                artist_songs.extend(
-                    get_artist_songs(
-                        artist,
-                        sp,
-                        include_groups="single",
-                        progress_callback=progress_callback_single,
-                    )
-                )
-                artist_songs = sort_songs_by_popularity(artist_songs, sp)
-                final_artist_songs.extend(artist_songs)
+            )
+            artist_songs = sort_songs_by_popularity(artist_songs, sp)
+            final_artist_songs.extend(artist_songs)
 
-        except spotipy.client.SpotifyException as e:
-            if e.http_status == 429:
-                try:
-                    retry_after = int(e.headers["Retry-After"])
-                except (KeyError, ValueError):
-                    print("No Retry-After header found, waiting 120 seconds")
-                    retry_after = 120
-
-                print(
-                    f"Rate limit reached while fetching songs for {artist['name']}, waiting {retry_after + 30} seconds"
-                )
-                time.sleep(retry_after + 30)
-            else:
-                print(f"A Spotify error occurred: {e}")
+            if (
+                program_state.resumed
+                and not resumed_track_loop
+                and program_state.last_song_saved_id is not None
+            ):
+                artists_songs_copy = final_artist_songs.copy()
+                for i, song in enumerate(artists_songs_copy):
+                    if song["id"] == program_state.last_song_saved_id:
+                        # remove all songs before the last saved song (included)
+                        final_artist_songs = final_artist_songs[i + 1 :]
+                        resumed_track_loop = True
+                        break
 
         final_artist_songs = remove_duplicate_songs(final_artist_songs)
         # keep only the wanted number of songs
         final_artist_songs = final_artist_songs[:wanted_songs_per_artist]
         artist_songs_uris = [song["uri"] for song in final_artist_songs]
         uris_to_add.extend(artist_songs_uris)
-        if len(uris_to_add) > 100:
+        if len(uris_to_add) >= 100:
             make_request(
                 sp, sp.playlist_add_items, output_playlist["id"], uris_to_add[:100]
             )
-            program_state.last_song_saved = final_artist_songs[99]
-            program_state.last_updated_at = time.localtime()
+            program_state.last_artist_saved_id = artist["id"]
+            last_uri = uris_to_add[99]
+            # find song using song[uri] == last_uri
+            program_state.last_song_saved_id = None
+            for song in final_artist_songs:
+                if song["uri"] == last_uri:
+                    program_state.last_song_saved_id = song["id"]
+                    break
+            if program_state.last_song_saved_id is None:
+                print("ERROR Could not find last saved song")
+            program_state.last_updated_at = datetime.datetime.now()
             # remove first 100 elements
             uris_to_add = uris_to_add[100:]
 
         total_songs.extend(final_artist_songs)
         # print(f"Current artist: {current_artist}/{total_artists}")
         progress_callback_generic()
-        show_progression()
+        print(f"{len(uris_to_add)} / 100")
 
     # add the remaining songs
     if len(uris_to_add) > 0:
         make_request(sp, sp.playlist_add_items, output_playlist["id"], uris_to_add)
-        program_state.last_song_saved = total_songs[-1]
+        program_state.last_song_saved_id = total_songs[-1]["id"]
+        program_state.last_artist_saved_id = artists[-1]["id"]
 
-    print(f"Playlist {output_playlist_name} filled with {len(total_songs)} songs")
+    print(f"Playlist filled with {len(total_songs)} songs")
     program_state.save_state()
 
 
 if __name__ == "__main__":
+    background_thread = threading.Thread(target=show_progression)
+    background_thread.daemon = True
     main()
+    stop_event.set()
+    background_thread.join()
