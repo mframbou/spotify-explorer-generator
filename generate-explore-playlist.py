@@ -69,6 +69,10 @@ class ProgramState:
             else None
         )
 
+    def delete_state_file(self):
+        if self.filename is not None:
+            os.remove(self.filename)
+
 
 def find_state_files():
     state_files = []
@@ -635,7 +639,8 @@ def main():
         program_state.last_artist_saved_id = artists[-1]["id"]
 
     print(f"Playlist filled with {len(total_songs)} songs")
-    program_state.save_state()
+    if program_state.resumed:
+        program_state.delete_state_file()
 
 
 if __name__ == "__main__":
